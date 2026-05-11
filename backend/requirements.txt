@@ -1,0 +1,37 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+email-validator==2.2.0
+
+# DB
+sqlmodel==0.0.22
+sqlalchemy==2.0.36
+
+# Pipeline
+langgraph==0.2.60
+langchain-core==0.3.28
+
+# LLM gateway
+litellm==1.55.8
+
+# Queue
+celery==5.4.0
+redis==5.2.1
+
+# Email
+# resend and gspread are optional — only needed when toggled on
+resend==2.5.1
+gspread==6.1.4
+oauth2client==4.1.3
+
+# Observability
+langfuse==2.57.1
+
+# Utility
+python-multipart==0.0.19
+pandas==2.2.3
+openpyxl==3.1.5
+slowapi==0.1.9
+httpx>=0.27,<0.28

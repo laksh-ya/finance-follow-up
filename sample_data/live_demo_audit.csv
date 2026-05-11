@@ -1,0 +1,5 @@
+id,invoice_id,timestamp,action,stage,tone_used,email_subject,confidence_score,tokens_used,latency_ms,retry_count,fallback_used,delivery_status,human_override,override_reason,validation_errors,error_message,model_used
+a1b2c3d4,INV-2026-001,2026-05-10T09:00:00,EMAIL_SENT,STAGE_1,WARM_FRIENDLY,Friendly Reminder: Overdue Payment for INV-2026-001,0.85,650,1200,0,false,SANDBOX,false,,,groq/llama-3.3-70b-versatile
+a1b2c3d5,INV-2026-002,2026-05-10T09:01:00,EMAIL_SENT,STAGE_2,POLITE_FIRM,Second Reminder: Invoice INV-2026-002 Past Due,0.82,680,980,0,false,SANDBOX,false,,,groq/llama-3.3-70b-versatile
+a1b2c3d6,INV-2026-004,2026-05-10T09:02:00,EMAIL_GENERATED,STAGE_4,STERN_URGENT,Final Notice: Immediate Action Required — INV-2026-004,0.78,720,1100,0,false,HUMAN_PENDING,false,,,groq/llama-3.3-70b-versatile
+a1b2c3d7,INV-2026-010,2026-05-10T09:03:00,STAGE_ESCALATED,ESCALATED,,,,0,,false,HUMAN_PENDING,false,Auto-flagged 30+ days overdue,,

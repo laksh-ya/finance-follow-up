@@ -1,0 +1,16 @@
+invoice_id,client_name,client_email,amount,currency,due_date,followup_count,status,payment_link,notes
+INV-2026-001,Rajesh Kapoor,rajesh.kapoor@example.com,45000,INR,2026-05-08,0,ACTIVE,https://pay.example.com/inv/INV-2026-001,Net-30 terms; 3 days overdue (Stage 1)
+INV-2026-002,Priya Mehta,priya.m@example.com,128500,INR,2026-05-03,0,ACTIVE,https://pay.example.com/inv/INV-2026-002,Marketing retainer Q1; 8 days overdue (Stage 2)
+INV-2026-003,Aniket Sharma,aniket@example.com,67800,INR,2026-04-25,1,ACTIVE,https://pay.example.com/inv/INV-2026-003,Follow-up reminded once; 16 days overdue (Stage 3)
+INV-2026-004,Neha Gupta,neha.gupta@example.com,250000,INR,2026-04-16,0,ACTIVE,https://pay.example.com/inv/INV-2026-004,Large account; 25 days overdue (Stage 4)
+INV-2026-005,Vikram Singh,vikram@example.com,38000,INR,2026-03-27,0,ACTIVE,https://pay.example.com/inv/INV-2026-005,Escalation candidate; 45 days overdue
+INV-2026-006,Ananya Iyer,ananya.iyer@example.com,92000,INR,2026-05-09,0,ACTIVE,https://pay.example.com/inv/INV-2026-006,2 days overdue (Stage 1)
+INV-2026-007,Rohan Desai,rohan@example.com,54200,INR,2026-05-01,0,ACTIVE,https://pay.example.com/inv/INV-2026-007,Tier-2 client; 10 days overdue (Stage 2)
+INV-2026-008,Kavita Nair,kavita.nair@example.com,17500,INR,2026-04-22,0,ACTIVE,https://pay.example.com/inv/INV-2026-008,Small invoice; gentle tone; 19 days overdue (Stage 3)
+INV-2026-009,Suresh Pillai,suresh@example.com,180000,INR,2026-04-12,0,ACTIVE,https://pay.example.com/inv/INV-2026-009,SLA-bound; chase weekly; 29 days overdue (Stage 4)
+INV-2026-010,Megha Joshi,megha.j@example.com,64000,INR,2026-03-15,0,ACTIVE,https://pay.example.com/inv/INV-2026-010,Long overdue; 57 days overdue
+INV-2026-011,Arjun Bose,arjun@example.com,73000,INR,2026-04-28,0,ACTIVE,https://pay.example.com/inv/INV-2026-011,Tier-1 client
+INV-2026-012,Tara Krishnan,tara.k@example.com,42500,INR,2026-04-30,0,ACTIVE,https://pay.example.com/inv/INV-2026-012,Healthcare account; net-30
+INV-2026-013,Sameer Khan,sameer@example.com,29800,INR,2026-04-08,0,ACTIVE,https://pay.example.com/inv/INV-2026-013,Already disputed once
+INV-2026-014,Riya Sen,riya.sen@example.com,32000,INR,2026-03-20,0,ACTIVE,https://pay.example.com/inv/INV-2026-014,52 days overdue
+INV-2026-015,Karthik S,karthik@example.com,86400,INR,2026-04-19,0,ACTIVE,https://pay.example.com/inv/INV-2026-015,Repeat client

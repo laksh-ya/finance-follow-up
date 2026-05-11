@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+credentials.json
+*.pem
+
+# DB / runtime
+*.db
+*.sqlite
+*.sqlite3
+celerybeat-schedule*
+dump.rdb
+
+# Node / Next
+node_modules/
+.next/
+out/
+.turbo/
+.vercel/
+pnpm-lock.yaml.bak
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+Thumbs.db
+
+# Logs
+*.log
+logs/

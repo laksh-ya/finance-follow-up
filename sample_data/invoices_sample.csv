@@ -1,0 +1,16 @@
+invoice_id,client_name,client_email,amount,currency,due_date,followup_count,status,payment_link,notes
+INV-2025-001,Rajesh Kapoor,rajesh.kapoor@aurorasoft.in,45000,INR,2025-04-20,0,ACTIVE,https://pay.example.com/inv/INV-2025-001,Net-30 terms; first reminder
+INV-2025-002,Priya Mehta,priya.m@blueoceanlabs.com,128500,INR,2025-04-25,0,ACTIVE,https://pay.example.com/inv/INV-2025-002,Marketing retainer Q1
+INV-2025-003,Aniket Sharma,aniket@quantamtech.io,67800,INR,2025-04-18,1,ACTIVE,https://pay.example.com/inv/INV-2025-003,Follow-up reminded once
+INV-2025-004,Neha Gupta,neha.gupta@orbitstudios.in,250000,INR,2025-04-10,0,ACTIVE,https://pay.example.com/inv/INV-2025-004,Large account; finance lead Sanjay
+INV-2025-005,Vikram Singh,vikram@deltaconsult.co.in,38000,INR,2025-04-05,0,ACTIVE,https://pay.example.com/inv/INV-2025-005,Stage-4 candidate
+INV-2025-006,Ananya Iyer,ananya.iyer@northwindtech.com,92000,INR,2025-03-20,0,ACTIVE,https://pay.example.com/inv/INV-2025-006,Escalation candidate (45+ days)
+INV-2025-007,Rohan Desai,rohan@stellarcloud.in,54200,INR,2025-04-22,0,ACTIVE,https://pay.example.com/inv/INV-2025-007,Tier-2 client
+INV-2025-008,Kavita Nair,kavita.nair@brightpath.io,17500,INR,2025-04-28,0,ACTIVE,https://pay.example.com/inv/INV-2025-008,Small invoice; gentle tone
+INV-2025-009,Suresh Pillai,suresh@meridianlogix.com,180000,INR,2025-04-12,0,ACTIVE,https://pay.example.com/inv/INV-2025-009,SLA-bound; chase weekly
+INV-2025-010,Megha Joshi,megha.j@cinderaai.com,64000,INR,2025-04-15,0,ACTIVE,https://pay.example.com/inv/INV-2025-010,Stage-3 candidate
+INV-2025-011,Arjun Bose,arjun@verdantfinance.in,73000,INR,2025-04-23,0,ACTIVE,https://pay.example.com/inv/INV-2025-011,
+INV-2025-012,Tara Krishnan,tara.k@helioshealth.co,42500,INR,2025-04-26,0,ACTIVE,https://pay.example.com/inv/INV-2025-012,Healthcare account; net-30
+INV-2025-013,Sameer Khan,sameer@axisretail.in,29800,INR,2025-04-08,0,ACTIVE,https://pay.example.com/inv/INV-2025-013,Already disputed once; reverify
+INV-2025-014,Pooja Reddy,pooja.r@nexussolutions.com,115000,INR,2025-03-30,0,ACTIVE,https://pay.example.com/inv/INV-2025-014,Escalation candidate
+INV-2025-015,Karthik Subramanian,karthik@parallaxtech.io,86400,INR,2025-04-19,0,ACTIVE,https://pay.example.com/inv/INV-2025-015,Repeat client; warm tone preferred
