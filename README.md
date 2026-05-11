@@ -1,256 +1,360 @@
-# Finance Credit Follow-Up Email Agent
+# Finance Collections Agent
 
-AI Enablement Internship - Task 2 submission. This project automates overdue-invoice follow-ups with escalation-aware email generation, human review controls, dispatch tracking, and auditability.
+An AI-powered accounts receivable automation system that generates escalation-aware follow-up emails for overdue invoices, with human-in-the-loop review, multi-provider email dispatch, and full audit traceability.
 
-## Mandatory submission checklist (Task 2)
+Built with **FastAPI** · **LangGraph** · **LiteLLM** · **Celery + Redis** · **SQLModel** · **Next.js 15**
 
-This section maps the internship brief requirements to artifacts in this repository.
+---
 
-| Mandatory item from brief | Status | Where it is covered |
-|---|---|---|
-| GitHub repository with source code | Included | `backend/`, `frontend/`, `docker-compose.yml`, `Makefile` |
-| `.env.example` | Included | `.env.example` |
-| `requirements.txt` | Included | `backend/requirements.txt` |
-| `README.md` with overview, setup, architecture diagram, LLM/framework rationale, security mitigations | Included | This file (see sections below) |
-| Sample output for Task 2 (emails/audit log) | Included | `sample_data/live_demo_audit.csv`, `sample_data/live_demo_invoices.csv` |
-| Demo recording (3-5 min) | Add before final submission | Replace placeholder in your final submission package |
-| Presentation deck (8-10 slides) | Add before final submission | Replace placeholder in your final submission package |
+## What It Does
 
-## Project overview
+Finance teams manually chase overdue invoices — inconsistent tone, delayed escalations, no audit trail, wasted hours. This agent replaces that with a deterministic AI pipeline:
 
-Finance teams often chase overdue invoices manually. This creates inconsistent messaging, delayed escalations, and weak traceability. This agent standardizes the workflow:
+1. **Ingest** invoices from CSV upload or Google Sheets sync
+2. **Classify** each invoice into escalation stages by overdue age
+3. **Generate** personalized emails using any LLM with strict schema enforcement
+4. **Route** risky cases (low confidence, stage 4+, or 30+ days overdue) to human reviewers
+5. **Dispatch** approved emails via mock, SMTP sandbox, or live Resend delivery
+6. **Audit** every action — ingestion, generation, validation, dispatch, review — immutably
 
-1. Ingest invoices from CSV upload or Google Sheets sync.
-2. Classify each invoice by overdue age into escalation stages.
-3. Generate personalized emails using an LLM with strict schema output.
-4. Route risky cases (low confidence, stage 4, or 30+ day escalation) to human review.
-5. Dispatch approved emails and persist a full audit trail.
+---
 
-## Task 2 requirement coverage
+## Architecture Overview
 
-| Task 2 requirement | Implementation status | Evidence |
-|---|---|---|
-| Email generation with stage-appropriate tone | Implemented | `backend/app/pipeline/prompts.py`, `backend/app/llm/gateway.py` |
-| Trigger logic for overdue invoices | Implemented | `backend/app/tasks/invoice_tasks.py` |
-| Send or mock-send support | Implemented | `backend/app/email/dispatcher.py` (`mock`, `sandbox`, `live`) |
-| Audit trail with metadata | Implemented | `backend/app/db/tables.py` (`AuditTable`, `SentEmailTable`) |
-| Escalation cap after stage 4 (30+ days) | Implemented | `backend/app/pipeline/nodes.py` (`classify_stage_node`, `human_queue_node`) |
-| Human-in-the-loop review | Implemented | `backend/app/api/human_queue.py`, `frontend/app/human-queue/page.tsx` |
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                         DATA INGESTION                               │
+│     CSV Upload  ·  Excel Upload  ·  Google Sheets (bidirectional)    │
+└─────────────────────────────┬────────────────────────────────────────┘
+                              │
+                ┌─────────────▼──────────────┐
+                │       FastAPI Backend       │
+                │  REST API  ·  Auth (X-API-Key)                      │
+                │  CORS  ·  Rate Limits  ·  Input Sanitization        │
+                └─────────────┬──────────────┘
+                              │
+                ┌─────────────▼──────────────┐
+                │   Celery + Redis Broker     │
+                │  Queues: high_priority,     │
+                │  default, scheduler         │
+                │  Beat: daily scan, 30m      │
+                │  sheets sync, 2h DLQ retry  │
+                └─────────────┬──────────────┘
+                              │
+           ┌──────────────────┼──────────────────┐
+           ▼                  ▼                  ▼
+    ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+    │  Worker(s)  │   │  Worker(s)  │   │  Worker(s)  │
+    │  LangGraph  │   │  LangGraph  │   │  LangGraph  │
+    │  Pipeline   │   │  Pipeline   │   │  Pipeline   │
+    └──────┬──────┘   └─────────────┘   └─────────────┘
+           │
+    ┌──────▼──────────────────────────────────────────────────┐
+    │                  LANGGRAPH PIPELINE                      │
+    │                                                          │
+    │  load_invoice → classify_stage → build_prompt            │
+    │       → call_llm → validate_output                       │
+    │           ↓              ↓                               │
+    │     [retry/fallback]  confidence_check                   │
+    │                          ↓          ↓                    │
+    │                    dispatch_email  human_queue            │
+    │                          ↓                               │
+    │                     write_audit → END                     │
+    └────────────┬────────────┬──────────────┬────────────────┘
+                 │            │              │
+          ┌──────▼──────┐ ┌──▼───────┐ ┌────▼──────┐
+          │   LiteLLM   │ │  Email   │ │ Langfuse  │
+          │   Gateway   │ │ Dispatch │ │  Tracing  │
+          │ Groq/Gemini │ │mock/SMTP │ │ (optional)│
+          │ OpenAI/     │ │  /Resend │ │           │
+          │ Ollama      │ │          │ │           │
+          └─────────────┘ └──────────┘ └───────────┘
+                 │
+          ┌──────▼─────────────────────────────────────┐
+          │              DATA LAYER                     │
+          │  SQLite / PostgreSQL (SQLModel)             │
+          │  Tables: invoices, audit_entries,           │
+          │  human_queue, sent_emails, dead_letter,     │
+          │  activity_events                            │
+          │  + Google Sheets writeback (optional)       │
+          └──────┬─────────────────────────────────────┘
+                 │
+          ┌──────▼─────────────────────────────────────┐
+          │           NEXT.JS 15 DASHBOARD              │
+          │  Dashboard · Invoices · Human Queue         │
+          │  Sent Emails · Audit Log · Observability    │
+          │  Settings · Test Connections                 │
+          └─────────────────────────────────────────────┘
+```
 
-## Tone escalation matrix (mandatory design)
+For full layer-by-layer documentation, see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
-| Stage | Trigger | Tone | Routing behavior |
+---
+
+## Tone Escalation Matrix
+
+| Stage | Trigger | Tone | Routing |
 |---|---|---|---|
-| Stage 1 | 1-7 days overdue | Warm and friendly | Auto-dispatch when confidence passes threshold and auto-dispatch is enabled |
-| Stage 2 | 8-14 days overdue | Polite but firm | Same as Stage 1 |
-| Stage 3 | 15-21 days overdue | Formal and serious | Same as Stage 1 |
-| Stage 4 | 22-30 days overdue | Stern and urgent | Always routed to human review when human-in-loop is enabled |
-| Escalated | 30+ days overdue | No automatic email | Forced human queue and status escalation workflow |
+| **Stage 1** | 1–7 days overdue | Warm & friendly | Auto-dispatch (if confidence passes threshold) |
+| **Stage 2** | 8–14 days overdue | Polite but firm | Auto-dispatch |
+| **Stage 3** | 15–21 days overdue | Formal & serious | Auto-dispatch (high-priority queue) |
+| **Stage 4** | 22–30 days overdue | Stern & urgent | Always human review when HIL enabled |
+| **Escalated** | 30+ days overdue | No auto email | Forced human queue · status → DISPUTED |
 
-## Architecture diagram (mandatory)
+---
 
-```text
-                               +------------------------+
-                               |      Next.js UI        |
-                               | Dashboard / Invoices   |
-                               | Queue / Sent / Audit   |
-                               +-----------+------------+
-                                           |
-                                           | REST + X-API-Key
-                                           v
-+--------------------------------------------------------------------------------+
-|                                FastAPI backend                                 |
-|                                                                                |
-|  Routers: invoices, trigger, emails, human-queue, sent-emails, audit, metrics |
-|                                                                                |
-|  +--------------------------- LangGraph pipeline ----------------------------+  |
-|  | load_invoice -> classify_stage -> build_prompt -> call_llm              |  |
-|  |        -> validate_output -> confidence_check -> (dispatch | queue)      |  |
-|  |        -> write_audit                                                    |  |
-|  +-------------------------------------------------------------------------+  |
-|                                                                                |
-|  Data/Infra integrations                                                       |
-|  - SQLModel DB (SQLite by default, Postgres optional)                         |
-|  - Celery + Redis (or inline eager execution)                                 |
-|  - LiteLLM gateway (Groq/Gemini/OpenAI/Ollama/Together or mock)              |
-|  - Email dispatcher (mock/SMTP/Resend)                                        |
-|  - Google Sheets sync + writeback (optional)                                  |
-|  - Langfuse tracing (optional)                                                |
-+--------------------------------------------------------------------------------+
-```
+## Technical Stack
 
-For deeper component and sequence details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-## Mandatory technical disclosures
-
-### LLM choice and rationale
-
-- Framework in code: **LiteLLM 1.55.8** (`backend/requirements.txt`)
-- Default provider and model in config: **Groq / `groq/llama-3.1-8b-instant`** (`.env.example`, `backend/app/config.py`)
-- Why this setup:
-  - Provider swapping is configuration-driven (`LLM__PROVIDER`, `LLM__MODEL`) without code changes.
-  - Structured JSON mode is enforced at gateway level.
-  - A deterministic mock path exists for zero-dependency demos and debugging.
-
-### Agent framework and architecture
-
-- Framework in code: **LangGraph 0.2.60**
-- Architecture pattern: **deterministic state-machine pipeline**, not open-ended tool loop.
-- State object: `InvoiceState` (`backend/app/models/langgraph_state.py`)
-- Graph wiring: `backend/app/pipeline/graph.py`
-- Node logic: `backend/app/pipeline/nodes.py`
-
-### Prompt design and guardrails
-
-Prompt registry is stage-based (`backend/app/pipeline/prompts.py`) and uses:
-
-1. A strict system prompt with non-negotiable rules (no hallucinated fields, exact invoice field echoing).
-2. Stage-specific tone requirements for Stage 1-4.
-3. Explicit JSON schema target with required fields.
-4. User prompt populated with structured invoice facts.
-
-System prompt excerpt (from implementation):
-
-```text
-STRICT RULES - NEVER VIOLATE:
-1. Never hallucinate or modify invoice data. Use only provided values.
-2. Output only valid JSON matching the required schema.
-3. Tone must match stage requirement.
-4. Never threaten legal action unless stage is 4.
-```
-
-Output then passes:
-
-1. Pydantic schema validation (`GeneratedEmail` model).
-2. Cross-field hallucination checks (`check_hallucination`).
-3. Retry loop with fallback template when validation repeatedly fails.
-
-## Security risk mitigation (mandatory graded section)
-
-| Risk in internship brief | Current mitigation in this project | Code reference |
+| Layer | Technology | Purpose |
 |---|---|---|
-| Prompt injection | Input sanitization on invoice fields, strict system rules, JSON-only output target, schema validation | `backend/app/models/invoice.py`, `backend/app/pipeline/prompts.py`, `backend/app/llm/gateway.py`, `backend/app/models/email_output.py` |
-| Data privacy / PII | PII remains in backend DB and is only exposed through authenticated API routes; optional sandbox mode avoids real delivery | `backend/app/api/auth.py`, `backend/app/email/dispatcher.py` |
-| API key handling | Secrets loaded from environment; sample placeholders in `.env.example`; frontend uses only public API URL/key values | `.env.example`, `backend/app/config.py`, `frontend/.env.local.example` |
-| Hallucination / factual drift | Structured output parsing, strict Pydantic model, invoice-to-output field matching, retries, fallback template, human routing | `backend/app/models/email_output.py`, `backend/app/pipeline/nodes.py` |
-| Unauthorized access | `/api/*` routes use API key dependency (`X-API-Key`) | `backend/app/api/auth.py`, router declarations in `backend/app/api/*.py` |
-| Email spoofing (Task 2) | `sandbox` mode for safe testing; `live` mode via Resend supports verified-domain sender policy | `backend/app/email/dispatcher.py`, `.env.example` |
+| **API** | FastAPI 0.115 · Pydantic 2 · SlowAPI | REST API with schema validation, rate limiting |
+| **Pipeline** | LangGraph 0.2.60 · LangChain Core | Deterministic state-machine for invoice processing |
+| **LLM** | LiteLLM 1.55.8 | Provider-agnostic gateway (Groq, Gemini, OpenAI, Ollama, Together, mock) |
+| **Queue** | Celery 5.4 · Redis 5.2 | Async task execution with priority queues and dead-letter retry |
+| **Database** | SQLModel 0.0.22 · SQLAlchemy 2.0 | ORM with SQLite (dev) or PostgreSQL (prod) |
+| **Email** | SMTP · Resend API | Three-mode dispatch: mock / sandbox (Mailtrap) / live |
+| **Observability** | Langfuse 2.57 | LLM call tracing with token counts, latency, prompt versions |
+| **Sheets** | gspread 6.1 | Bidirectional Google Sheets sync with auto-column management |
+| **Frontend** | Next.js 15 · React 19 · Tailwind · shadcn/ui | Operator dashboard with 8 route-level pages |
 
-## Setup
+### LLM Choice Rationale
+
+- **Framework**: LiteLLM — provider switching is configuration-only (`LLM__PROVIDER`, `LLM__MODEL`), no code changes needed
+- **Default**: Groq / `groq/llama-3.1-8b-instant` — fastest free-tier inference (~1s/email), JSON output mode support
+- **Structured output**: JSON mode enforced at gateway level, parsed into strict Pydantic schema
+- **Fallback**: Deterministic mock templates when LLM retries exhaust or no API key configured
+
+### Agent Framework Rationale
+
+- **Framework**: LangGraph — deterministic state-machine pipeline, not open-ended tool-use loop
+- **State**: Typed `InvoiceState` dict flowing through 10 explicit nodes
+- **Routing**: Conditional edges based on validation status, confidence score, and escalation stage
+- **Reliability**: Bounded retry (2 attempts) → fallback template → human queue — never fails silently
+
+---
+
+## Prompt Design & Guardrails
+
+The prompt system uses a **stage-based registry** with layered safety:
+
+1. **System prompt** with 10 non-negotiable rules (no hallucination, exact field echo, JSON-only output)
+2. **Stage-specific tone requirements** (warm → polite → formal → stern)
+3. **Explicit JSON schema** target with required anti-hallucination fields
+4. **User prompt** populated with structured invoice facts
+
+Post-generation validation pipeline:
+1. **Pydantic schema validation** — strict field types, length constraints
+2. **Hallucination check** — cross-field comparison against source invoice (`invoice_id`, `client_name`, `amount`, `days_overdue`)
+3. **Placeholder detection** — rejects `[INSERT`, `PLACEHOLDER`, `TBD` in generated body
+4. **Retry loop** — up to 2 re-generations on validation failure
+5. **Fallback template** — deterministic template when retries exhaust (always goes to human review)
+
+---
+
+## Security Risk Mitigation
+
+| Risk | Mitigation | Code Reference |
+|---|---|---|
+| **Prompt injection** | Input field sanitization (forbidden patterns), strict system prompt constraints, JSON-only output mode, Pydantic schema + hallucination validation | `models/invoice.py`, `pipeline/prompts.py`, `llm/gateway.py`, `models/email_output.py` |
+| **Data privacy / PII** | PII in backend DB behind API-key auth; email addresses masked in logs; sandbox mode prevents real delivery | `api/auth.py`, `email/dispatcher.py` |
+| **API key handling** | Secrets from environment variables only; `.env.example` has placeholders; frontend uses only public vars | `.env.example`, `config.py` |
+| **Hallucination** | Strict Pydantic schema, field-level mismatch checks, retry loop, deterministic fallback, human routing for low confidence | `models/email_output.py`, `pipeline/nodes.py` |
+| **Unauthorized access** | `X-API-Key` header required on all `/api/*` routes; auth failures logged to activity feed | `api/auth.py`, router declarations |
+| **Email spoofing** | Explicit mock/sandbox/live mode switch; live mode via Resend requires verified domain (SPF/DKIM/DMARC) | `email/dispatcher.py` |
+
+---
+
+## Quick Start
 
 ### Prerequisites
 
-- Python 3.12 recommended
+- Python 3.11+ (3.12 recommended)
 - Node.js 18+ and `pnpm`
-- Optional for full async deployment: Redis
-- Optional for production-like DB: PostgreSQL
+- Optional: Redis (for async task execution)
+- Optional: PostgreSQL (for production DB)
 
-### Quick start (local, CSV mode)
+### Install & Run (local, CSV mode, ~2 minutes)
 
 ```bash
+# 1. Clone and configure
+git clone <repo-url> && cd finance-follow-up
 cp .env.example .env
 
-cd backend
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cd ..
+# 2. Install dependencies
+make install
 
-cd frontend
-pnpm install
-cd ..
-
+# 3. Start both servers
 make dev
 ```
 
-Then open:
+Open:
+- **Frontend**: http://localhost:3000
+- **API docs**: http://localhost:8000/docs
 
-- Frontend: `http://localhost:3000`
-- API docs: `http://localhost:8000/docs`
+### What's running in default mode
 
-### Real-provider setup
+| Component | Mode | What it means |
+|---|---|---|
+| LLM | `mock` (no API key) | Deterministic template emails — no external calls |
+| Email | `mock` | Logs only, no network sends |
+| Queue | `CELERY_EAGER=true` | Tasks run inline — no Redis needed |
+| Database | SQLite | File-based, zero setup |
 
-Use [SETUP_REAL.md](SETUP_REAL.md) to configure Groq/OpenAI/Gemini, Redis, Postgres, SMTP/Resend, Google Sheets, and Langfuse.
+### Going Real
 
-## Runtime controls
+See **[SETUP_REAL.md](SETUP_REAL.md)** for step-by-step credentials setup:
+- LLM providers (Groq/Gemini/OpenAI/Ollama)
+- Email sandbox (Mailtrap) and live (Resend)
+- Redis queue (Upstash)
+- PostgreSQL (Supabase/Neon)
+- Langfuse tracing
+- Google Sheets sync
+- Production deployment (Render + Vercel)
 
-Behavior can be changed from **Settings UI** (`/settings`) or `/api/config`:
+---
 
-- `data_source`: `csv` or `sheets`
-- `human_in_loop`: route risky drafts to queue
-- `auto_dispatch`: send directly vs queue all
-- `email_mode`: `mock`, `sandbox`, `live`
-- LLM provider/model/key/threshold
+## Makefile Commands
 
-Switching between `csv` and `sheets` modes resets local DB state for session isolation.
+```bash
+make help          # Show all available targets
+make install       # Install backend + frontend dependencies
+make dev           # Run backend + frontend (foreground)
+make backend       # Run backend only
+make frontend      # Run frontend only
+make worker        # Run Celery worker (needs Redis)
+make beat          # Run Celery Beat scheduler
+make flower        # Run Flower monitoring UI (:5555)
+make seed          # Seed mock invoices via API
+make reset         # Wipe local DB via API
+make test-llm      # Curl LLM diagnostic endpoint
+make test-email    # Curl email diagnostic endpoint
+make docker-up     # docker compose up (full stack)
+make docker-down   # docker compose down
+make typecheck     # Run TypeScript type check
+make stop          # Kill all running services
+```
 
-## API surface (summary)
+---
 
-All `/api/*` endpoints require `X-API-Key` except `/api/invoices/sample-csv`. Full schema is available at `/docs`.
+## Docker Compose
 
-| Domain | Key endpoints |
+Full multi-service stack with `docker-compose.yml`:
+
+```bash
+make docker-up     # Starts: Redis, Backend, Worker, Beat, Flower, Frontend
+```
+
+Services: `redis` (broker) · `backend` (FastAPI) · `worker` (Celery) · `beat` (scheduler) · `flower` (monitoring) · `frontend` (Next.js)
+
+---
+
+## Runtime Controls
+
+Configurable from **Settings UI** (`/settings`) or `PATCH /api/config`:
+
+| Setting | Options | Effect |
+|---|---|---|
+| `data_source` | `csv` · `sheets` | Invoice ingestion mode |
+| `human_in_loop` | `true` · `false` | Route risky drafts to review queue |
+| `auto_dispatch` | `true` · `false` | Auto-send vs queue all for review |
+| `email_mode` | `mock` · `sandbox` · `live` | Email delivery mode |
+| LLM settings | provider · model · key · threshold | LLM configuration |
+
+---
+
+## API Surface
+
+All `/api/*` endpoints require `X-API-Key` header (except `/api/invoices/sample-csv`). Full OpenAPI schema at `/docs`.
+
+| Domain | Key Endpoints |
 |---|---|
-| Health | `GET /health`, `GET /api/diagnostics/health-deep` |
-| Invoices | `GET /api/invoices`, `POST /api/invoices/upload`, `PATCH /api/invoices/{id}/status`, `GET /api/invoices/{id}/timeline`, `GET /api/invoices/export` |
-| Triggering | `POST /api/trigger/scan`, `POST /api/trigger/invoice/{invoice_id}` |
-| Email generation | `GET /api/emails/preview/{invoice_id}`, `POST /api/emails/regenerate/{invoice_id}` |
-| Human review | `GET /api/human-queue`, `POST /api/human-queue/{queue_id}/action` |
-| Audit and sent log | `GET /api/audit`, `GET /api/sent-emails`, CSV export endpoints |
-| Metrics | `GET /api/metrics`, `GET /api/metrics/activity-feed`, `GET /api/metrics/dead-letter` |
-| Config and mode | `GET/PATCH /api/config`, `POST /api/config/seed`, `POST /api/config/reset` |
-| Sheets sync | `GET /api/sheets/status`, `POST /api/sheets/sync` |
+| **Health** | `GET /health` · `GET /api/diagnostics/health-deep` |
+| **Invoices** | `GET /api/invoices` · `POST /api/invoices/upload` · `PATCH /api/invoices/{id}/status` · `GET /api/invoices/{id}/timeline` · `GET /api/invoices/export` |
+| **Trigger** | `POST /api/trigger/scan` · `POST /api/trigger/invoice/{invoice_id}` |
+| **Email** | `GET /api/emails/preview/{invoice_id}` · `POST /api/emails/regenerate/{invoice_id}` |
+| **Human Queue** | `GET /api/human-queue` · `POST /api/human-queue/{queue_id}/action` |
+| **Sent Emails** | `GET /api/sent-emails` · `GET /api/sent-emails/{id}` · CSV export |
+| **Audit** | `GET /api/audit` · CSV export |
+| **Metrics** | `GET /api/metrics` · `GET /api/metrics/activity-feed` · `GET /api/metrics/dead-letter` |
+| **Config** | `GET/PATCH /api/config` · `POST /api/config/seed` · `POST /api/config/reset` |
+| **Sheets** | `GET /api/sheets/status` · `POST /api/sheets/sync` |
+| **Diagnostics** | Test LLM · Test Email · Test Redis · Test Sheets |
 
-## Frontend pages
+---
+
+## Frontend Pages
 
 | Route | Purpose |
 |---|---|
-| `/` | Dashboard metrics, stage breakdown, activity feed |
-| `/invoices` | Upload/sync, process/reprocess, filter, status updates |
-| `/invoices/[id]` | Per-invoice controls, regenerate, timeline |
-| `/human-queue` | Human review actions: approve/edit/reject/regenerate/flag |
-| `/sent` | Full sent-attempt log with email body preview |
-| `/audit` | Auditable event table with filtering and export |
-| `/observability` | LLM and dead-letter monitoring view |
-| `/settings` | Runtime behavior and provider configuration |
+| `/` | Dashboard — KPI metrics, stage breakdown, live activity feed |
+| `/invoices` | Upload/sync, process/reprocess, filter, status management |
+| `/invoices/[id]` | Per-invoice detail — regenerate, timeline, email preview |
+| `/human-queue` | Review actions: approve, edit, reject, regenerate, flag |
+| `/sent` | Sent email log with full body preview and delivery status |
+| `/audit` | Filterable audit table with CSV export |
+| `/observability` | LLM health, dead-letter queue monitoring |
+| `/settings` | Runtime configuration and test connections panel |
 
-## Submission sample outputs
+---
 
-- `sample_data/live_demo_audit.csv`: example audit records and delivery status progression.
-- `sample_data/live_demo_invoices.csv`: sample invoice source data across multiple stages.
-- Inline email examples are generated through pipeline runs and viewable in `/sent` and `/invoices/[id]`.
+## Repository Structure
 
-## Repository structure
-
-```text
+```
 finance-follow-up/
-|- backend/
-|  |- app/
-|  |  |- api/
-|  |  |- db/
-|  |  |- email/
-|  |  |- llm/
-|  |  |- models/
-|  |  |- pipeline/
-|  |  |- services/
-|  |  `- tasks/
-|  `- requirements.txt
-|- frontend/
-|  |- app/
-|  |- components/
-|  `- lib/
-|- sample_data/
-|- docs/
-|  `- ARCHITECTURE.md
-|- .env.example
-|- docker-compose.yml
-|- Makefile
-`- SETUP_REAL.md
+├── backend/
+│   ├── app/
+│   │   ├── api/            # FastAPI routers (invoices, trigger, emails, etc.)
+│   │   ├── db/             # SQLModel tables, session factory, repository layer
+│   │   ├── email/          # Dispatcher (mock / SMTP / Resend)
+│   │   ├── llm/            # LiteLLM gateway + deterministic mock
+│   │   ├── models/         # Pydantic DTOs (invoice, email output, audit, enums, state)
+│   │   ├── pipeline/       # LangGraph graph, nodes, prompt registry
+│   │   ├── services/       # Sheets sync, Langfuse client, mock seed
+│   │   ├── tasks/          # Celery app + invoice processing tasks
+│   │   ├── config.py       # Pydantic settings (env-driven)
+│   │   └── main.py         # FastAPI entrypoint
+│   ├── Dockerfile
+│   └── requirements.txt
+├── frontend/
+│   ├── app/                # Next.js route pages
+│   ├── components/         # Reusable UI + domain widgets
+│   ├── lib/                # API client + shared types
+│   ├── Dockerfile
+│   └── package.json
+├── sample_data/            # Sample CSVs for demos
+├── docs/
+│   └── ARCHITECTURE.md     # Deep layer-wise architecture documentation
+├── .env.example            # Environment template with all variables
+├── docker-compose.yml      # Full multi-service stack
+├── Makefile                # Common operations
+└── SETUP_REAL.md           # Comprehensive setup guide (mock → production)
 ```
 
-## Notes for final internship handoff
+---
 
-Before final submission, attach:
+## Sample Outputs
 
-1. Demo video link (3-5 minutes, end-to-end flow on sample data).
-2. Presentation deck link (8-10 slides covering problem, design, architecture, outcomes, learnings).
+- `sample_data/invoices_sample.csv` — downloadable sample invoice CSV (also served at `/api/invoices/sample-csv`)
+- `sample_data/live_demo_audit.csv` — example audit records showing delivery status progression
+- `sample_data/live_demo_invoices.csv` — sample invoice data across multiple escalation stages
+- Generated emails are viewable in the `/sent` page and per-invoice detail views
 
-The codebase and docs in this repository are already structured to satisfy the mandatory Task 2 technical documentation requirements.
+---
+
+## Task Requirement Coverage
+
+| Requirement | Status | Implementation |
+|---|---|---|
+| Email generation with stage-appropriate tone | ✅ | `pipeline/prompts.py`, `llm/gateway.py` |
+| Trigger logic for overdue invoices | ✅ | `tasks/invoice_tasks.py` |
+| Send or mock-send support | ✅ | `email/dispatcher.py` (mock, sandbox, live) |
+| Audit trail with metadata | ✅ | `db/tables.py` (AuditTable, SentEmailTable) |
+| Escalation cap after stage 4 (30+ days) | ✅ | `pipeline/nodes.py` (classify_stage, human_queue) |
+| Human-in-the-loop review | ✅ | `api/human_queue.py`, frontend queue page |
+| Technical stack + rationale disclosure | ✅ | This README |
+| Prompt design disclosure | ✅ | This README + `docs/ARCHITECTURE.md` |
+| Security risk mitigation disclosure | ✅ | This README |
+| Architecture diagram | ✅ | This README + `docs/ARCHITECTURE.md` |
+| `.env.example` | ✅ | Root `.env.example` |
+| `requirements.txt` | ✅ | `backend/requirements.txt` |
+| Sample output (emails/audit) | ✅ | `sample_data/` |
