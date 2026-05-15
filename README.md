@@ -1,360 +1,385 @@
 # Finance Collections Agent
 
-An AI-powered accounts receivable automation system that generates escalation-aware follow-up emails for overdue invoices, with human-in-the-loop review, multi-provider email dispatch, and full audit traceability.
+An AI-powered accounts receivable system that generates escalation-aware follow-up emails for overdue invoices — automatically, consistently, and with a full audit trail.
 
-Built with **FastAPI** · **LangGraph** · **LiteLLM** · **Celery + Redis** · **SQLModel** · **Next.js 15**
+**FastAPI · LangGraph · LiteLLM · Celery + Redis · Next.js 15**
 
----
-
-## What It Does
-
-Finance teams manually chase overdue invoices — inconsistent tone, delayed escalations, no audit trail, wasted hours. This agent replaces that with a deterministic AI pipeline:
-
-1. **Ingest** invoices from CSV upload or Google Sheets sync
-2. **Classify** each invoice into escalation stages by overdue age
-3. **Generate** personalized emails using any LLM with strict schema enforcement
-4. **Route** risky cases (low confidence, stage 4+, or 30+ days overdue) to human reviewers
-5. **Dispatch** approved emails via mock, SMTP sandbox, or live Resend delivery
-6. **Audit** every action — ingestion, generation, validation, dispatch, review — immutably
+[**Demo Video →**](https://drive.google.com/drive/u/0/folders/1RHEfpEfq5Wn40YZlYUmcjUFHud0su1lf) · [**GitHub →**](https://github.com/laksh-ya/finance-follow-up)
 
 ---
 
-## Architecture Overview
+![Dashboard](docs/screenshots/dashboard.png)
+
+---
+
+## The Problem
+
+Finance teams chase overdue invoices manually. The result: inconsistent tone, no audit trail, delayed escalations, hours burned on copy-paste emails. The challenge isn't generating one email — it's generating the right email, for the right client, at the right escalation level, every day, without hallucinating invoice data or sending a stern final notice to someone who's 3 days late.
+
+---
+
+## Architecture
+
+![Architecture](docs/screenshots/architecture.png)
+
+The system is built as a **modular pipeline** across 7 layers:
+
+- **Ingestion** — CSV, Excel, or live Google Sheets sync
+- **FastAPI backend** — REST API with auth, rate limiting, input sanitization
+- **Celery + Redis** — async task queue with priority routing and Celery Beat scheduler
+- **LangGraph pipeline** — 10-node deterministic state machine per invoice (see below)
+- **LiteLLM gateway** — provider-agnostic LLM interface (Groq, Gemini, OpenAI, Ollama, Together)
+- **Email dispatch** — three-mode: mock / SMTP sandbox / live Resend
+- **Next.js dashboard** — 8-page operator UI with live feed, human review queue, observability
+
+---
+
+## The Pipeline
+
+Every overdue invoice runs through a deterministic LangGraph state machine. The pipeline never fails silently — exhausted retries fall to a deterministic template, failed Celery tasks land in a dead-letter queue with a manual retry button.
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                         DATA INGESTION                               │
-│     CSV Upload  ·  Excel Upload  ·  Google Sheets (bidirectional)    │
-└─────────────────────────────┬────────────────────────────────────────┘
-                              │
-                ┌─────────────▼──────────────┐
-                │       FastAPI Backend       │
-                │  REST API  ·  Auth (X-API-Key)                      │
-                │  CORS  ·  Rate Limits  ·  Input Sanitization        │
-                └─────────────┬──────────────┘
-                              │
-                ┌─────────────▼──────────────┐
-                │   Celery + Redis Broker     │
-                │  Queues: high_priority,     │
-                │  default, scheduler         │
-                │  Beat: daily scan, 30m      │
-                │  sheets sync, 2h DLQ retry  │
-                └─────────────┬──────────────┘
-                              │
-           ┌──────────────────┼──────────────────┐
-           ▼                  ▼                  ▼
-    ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-    │  Worker(s)  │   │  Worker(s)  │   │  Worker(s)  │
-    │  LangGraph  │   │  LangGraph  │   │  LangGraph  │
-    │  Pipeline   │   │  Pipeline   │   │  Pipeline   │
-    └──────┬──────┘   └─────────────┘   └─────────────┘
-           │
-    ┌──────▼──────────────────────────────────────────────────┐
-    │                  LANGGRAPH PIPELINE                      │
-    │                                                          │
-    │  load_invoice → classify_stage → build_prompt            │
-    │       → call_llm → validate_output                       │
-    │           ↓              ↓                               │
-    │     [retry/fallback]  confidence_check                   │
-    │                          ↓          ↓                    │
-    │                    dispatch_email  human_queue            │
-    │                          ↓                               │
-    │                     write_audit → END                     │
-    └────────────┬────────────┬──────────────┬────────────────┘
-                 │            │              │
-          ┌──────▼──────┐ ┌──▼───────┐ ┌────▼──────┐
-          │   LiteLLM   │ │  Email   │ │ Langfuse  │
-          │   Gateway   │ │ Dispatch │ │  Tracing  │
-          │ Groq/Gemini │ │mock/SMTP │ │ (optional)│
-          │ OpenAI/     │ │  /Resend │ │           │
-          │ Ollama      │ │          │ │           │
-          └─────────────┘ └──────────┘ └───────────┘
-                 │
-          ┌──────▼─────────────────────────────────────┐
-          │              DATA LAYER                     │
-          │  SQLite / PostgreSQL (SQLModel)             │
-          │  Tables: invoices, audit_entries,           │
-          │  human_queue, sent_emails, dead_letter,     │
-          │  activity_events                            │
-          │  + Google Sheets writeback (optional)       │
-          └──────┬─────────────────────────────────────┘
-                 │
-          ┌──────▼─────────────────────────────────────┐
-          │           NEXT.JS 15 DASHBOARD              │
-          │  Dashboard · Invoices · Human Queue         │
-          │  Sent Emails · Audit Log · Observability    │
-          │  Settings · Test Connections                 │
-          └─────────────────────────────────────────────┘
+load_invoice → classify_stage → build_prompt → call_llm → validate_output
+                                                                   │
+                                              valid?  ──→ confidence_check
+                                              retry?  ──→ build_prompt (max 2x)
+                                              failed? ──→ fallback_template
+                                                                   │
+                                           HIGH conf ──→ dispatch_email
+                                           LOW / S4  ──→ human_queue
+                                                                   │
+                                                             write_audit
 ```
 
-For full layer-by-layer documentation, see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+**Why LangGraph over alternatives:** the escalation logic maps cleanly to graph edges. The `InvoiceState` TypedDict is the explicit contract between all 10 nodes — no hidden state, no implicit passing. Conditional routing at two decision points (validation result, confidence score) without nested if-else chains. The retry loop is bounded by state (`retry_count <= 2`) and cannot run indefinitely. Compared to CrewAI/AutoGen — this isn't a multi-agent problem and adding that overhead would obscure the pipeline logic.
 
 ---
 
-## Tone Escalation Matrix
+## Escalation Logic
 
-| Stage | Trigger | Tone | Routing |
+| Stage | Days Overdue | Tone | Dispatch |
 |---|---|---|---|
-| **Stage 1** | 1–7 days overdue | Warm & friendly | Auto-dispatch (if confidence passes threshold) |
-| **Stage 2** | 8–14 days overdue | Polite but firm | Auto-dispatch |
-| **Stage 3** | 15–21 days overdue | Formal & serious | Auto-dispatch (high-priority queue) |
-| **Stage 4** | 22–30 days overdue | Stern & urgent | Always human review when HIL enabled |
-| **Escalated** | 30+ days overdue | No auto email | Forced human queue · status → DISPUTED |
+| Stage 1 | 1–7 | Warm & friendly | Auto |
+| Stage 2 | 8–14 | Polite but firm | Auto |
+| Stage 3 | 15–21 | Formal & serious | Auto (high-priority queue) |
+| Stage 4 | 22–30 | Stern & urgent | Human review |
+| Escalated | 30+ | No auto email | Flagged — no further automation |
+
+Stage 4 emails always route to human review when human-in-the-loop is on. 30+ day invoices skip email generation entirely — pipeline sets status to DISPUTED and queues for manual handling.
 
 ---
 
-## Technical Stack
+## Email Generation & Validation
 
-| Layer | Technology | Purpose |
-|---|---|---|
-| **API** | FastAPI 0.115 · Pydantic 2 · SlowAPI | REST API with schema validation, rate limiting |
-| **Pipeline** | LangGraph 0.2.60 · LangChain Core | Deterministic state-machine for invoice processing |
-| **LLM** | LiteLLM 1.55.8 | Provider-agnostic gateway (Groq, Gemini, OpenAI, Ollama, Together, mock) |
-| **Queue** | Celery 5.4 · Redis 5.2 | Async task execution with priority queues and dead-letter retry |
-| **Database** | SQLModel 0.0.22 · SQLAlchemy 2.0 | ORM with SQLite (dev) or PostgreSQL (prod) |
-| **Email** | SMTP · Resend API | Three-mode dispatch: mock / sandbox (Mailtrap) / live |
-| **Observability** | Langfuse 2.57 | LLM call tracing with token counts, latency, prompt versions |
-| **Sheets** | gspread 6.1 | Bidirectional Google Sheets sync with auto-column management |
-| **Frontend** | Next.js 15 · React 19 · Tailwind · shadcn/ui | Operator dashboard with 8 route-level pages |
+The LLM receives a structured system prompt with 10 strict rules, a stage-specific user prompt with all invoice fields injected, and a required JSON output schema.
 
-### LLM Choice Rationale
+**Anti-hallucination enforcement** is the core reliability mechanism. The LLM must echo `invoice_id_used`, `client_name_used`, `amount_used`, and `days_overdue_used` back in its output — these are cross-checked against the source record in code. Any mismatch fails validation and triggers a retry. The hallucination fields were added after noticing batch runs would occasionally transpose invoice IDs — cross-validating in code rather than relying on prompt instructions alone eliminated the failure mode.
 
-- **Framework**: LiteLLM — provider switching is configuration-only (`LLM__PROVIDER`, `LLM__MODEL`), no code changes needed
-- **Default**: Groq / `groq/llama-3.1-8b-instant` — fastest free-tier inference (~1s/email), JSON output mode support
-- **Structured output**: JSON mode enforced at gateway level, parsed into strict Pydantic schema
-- **Fallback**: Deterministic mock templates when LLM retries exhaust or no API key configured
+Validation pipeline per response:
 
-### Agent Framework Rationale
+1. Pydantic parse — strict field types, length constraints, valid tone enum
+2. Hallucination check — 4-field cross-validation against source invoice
+3. Placeholder detection — rejects `[INSERT`, `TBD`, `PLACEHOLDER` in body
+4. Retry loop — up to 2 re-generations on failure
+5. Fallback template — deterministic output when retries exhaust, always routed to human review
 
-- **Framework**: LangGraph — deterministic state-machine pipeline, not open-ended tool-use loop
-- **State**: Typed `InvoiceState` dict flowing through 10 explicit nodes
-- **Routing**: Conditional edges based on validation status, confidence score, and escalation stage
-- **Reliability**: Bounded retry (2 attempts) → fallback template → human queue — never fails silently
+Every email includes: client name, invoice number, amount, due date, days overdue, and a dynamic payment link — from data, never invented.
 
 ---
 
-## Prompt Design & Guardrails
+## LLM — Choice & Rationale
 
-The prompt system uses a **stage-based registry** with layered safety:
+**Default:** `groq/llama-3.3-70b-versatile` via LiteLLM
 
-1. **System prompt** with 10 non-negotiable rules (no hallucination, exact field echo, JSON-only output)
-2. **Stage-specific tone requirements** (warm → polite → formal → stern)
-3. **Explicit JSON schema** target with required anti-hallucination fields
-4. **User prompt** populated with structured invoice facts
+| Criterion | Why Groq + Llama 3.3 70B |
+|---|---|
+| Cost | Free tier, no credit card — zero barrier for evaluation |
+| Speed | ~1–1.5s end-to-end via Groq's LPU hardware — live regeneration feels instant |
+| JSON output mode | Native `response_format: json_object` support — maps directly onto `GeneratedEmail` Pydantic schema |
+| Quality | Tested across 330+ invoice pipeline runs (Langfuse) — strong adherence to exact-field-echo requirement |
+| Context window | 128k — system prompt + invoice context + output schema with headroom |
+| Portability | LiteLLM means zero code changes to switch provider |
 
-Post-generation validation pipeline:
-1. **Pydantic schema validation** — strict field types, length constraints
-2. **Hallucination check** — cross-field comparison against source invoice (`invoice_id`, `client_name`, `amount`, `days_overdue`)
-3. **Placeholder detection** — rejects `[INSERT`, `PLACEHOLDER`, `TBD` in generated body
-4. **Retry loop** — up to 2 re-generations on validation failure
-5. **Fallback template** — deterministic template when retries exhaust (always goes to human review)
+Llama 3.3 70B outperforms 8B specifically on the exact-field-echo requirement that the hallucination check depends on. The latency delta on Groq's infrastructure is negligible.
 
----
+**Alternatives considered:**
 
-## Security Risk Mitigation
+- `llama-3.1-8b-instant` — faster but less reliable JSON schema adherence on multi-field structured outputs
+- `gemini-1.5-flash` — comparable, slightly higher hallucination rate on exact-field-echo in testing
+- `gpt-4o-mini` — best quality but requires billing setup; unnecessary for this task
 
-| Risk | Mitigation | Code Reference |
-|---|---|---|
-| **Prompt injection** | Input field sanitization (forbidden patterns), strict system prompt constraints, JSON-only output mode, Pydantic schema + hallucination validation | `models/invoice.py`, `pipeline/prompts.py`, `llm/gateway.py`, `models/email_output.py` |
-| **Data privacy / PII** | PII in backend DB behind API-key auth; email addresses masked in logs; sandbox mode prevents real delivery | `api/auth.py`, `email/dispatcher.py` |
-| **API key handling** | Secrets from environment variables only; `.env.example` has placeholders; frontend uses only public vars | `.env.example`, `config.py` |
-| **Hallucination** | Strict Pydantic schema, field-level mismatch checks, retry loop, deterministic fallback, human routing for low confidence | `models/email_output.py`, `pipeline/nodes.py` |
-| **Unauthorized access** | `X-API-Key` header required on all `/api/*` routes; auth failures logged to activity feed | `api/auth.py`, router declarations |
-| **Email spoofing** | Explicit mock/sandbox/live mode switch; live mode via Resend requires verified domain (SPF/DKIM/DMARC) | `email/dispatcher.py` |
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- Python 3.11+ (3.12 recommended)
-- Node.js 18+ and `pnpm`
-- Optional: Redis (for async task execution)
-- Optional: PostgreSQL (for production DB)
-
-### Install & Run (local, CSV mode, ~2 minutes)
+**Switching providers is two env vars:**
 
 ```bash
-# 1. Clone and configure
-git clone <repo-url> && cd finance-follow-up
+LLM__PROVIDER=gemini
+LLM__MODEL=gemini/gemini-1.5-flash-latest
+LLM__API_KEY=your_key
+```
+
+Works for Groq, Gemini, OpenAI, Together AI, or any Ollama model locally. The model picker in Settings switches the active provider without a restart.
+
+---
+
+## Prompt Design
+
+System prompt structure (abbreviated):
+
+```
+You are an enterprise finance collections assistant.
+
+STRICT RULES:
+1. Never hallucinate invoice data. Use ONLY values provided.
+2. invoice_id_used MUST equal exactly: {invoice_id}
+3. client_name_used MUST equal exactly: {client_name}
+4. amount_used MUST equal exactly: {amount}
+5. days_overdue_used MUST equal exactly: {days_overdue}
+6. Output ONLY valid JSON. No markdown. No preamble.
+7. Tone MUST match: {tone_requirement}
+8. Never mention legal action unless stage is STAGE_4.
+... (10 rules total)
+```
+
+Each of the 4 stages has a user prompt template with the full invoice context injected. Tone, key message, and CTA differ per stage — warm and assumptive at Stage 1, credit-term consequences at Stage 3, legal escalation language only at Stage 4.
+
+---
+
+## Human Review Queue
+
+![Review Queue](docs/screenshots/review-queue.png)
+
+Low-confidence drafts, Stage 4 notices, and escalated invoices land here. The queue groups items by reason (escalated 30+ days, Stage 4 final notice, low confidence) so reviewers triage by urgency.
+
+Actions per item:
+
+- **Approve & send** — dispatches as-is, logged as human-approved
+- **Edit first** — inline editor, edited version sent, original preserved in audit
+- **New draft** — re-runs pipeline, previous draft superseded
+- **Discard** — no email sent, invoice flagged
+- **Legal** — sets account status, removes from email automation
+
+---
+
+## Email Delivery Modes
+
+![Mailtrap](docs/screenshots/mailtrap.png)
+
+Three modes, switchable live from Settings:
+
+**Mock** — emails generated and logged, nothing sent. Default for development.
+
+**Sandbox** — routes to a Mailtrap SMTP inbox. Real rendering, real deliverability metadata, client never receives anything. Used for the demo and all test runs.
+
+**Live** — dispatches via Resend API. Requires a verified sender domain with SPF, DKIM, and DMARC.
+
+The SMTP layer handles port variants automatically (465/587/2525) — works with Gmail app passwords, Zoho, Mailtrap, or any standard SMTP without code changes.
+
+Every dispatch attempt is persisted with provider name, message ID, model used, token count, and delivery status.
+
+![Sent Emails](docs/screenshots/sent-emails.png)
+
+---
+
+## Google Sheets Integration
+
+Invoices ingested via CSV/Excel upload or live Google Sheets sync. The Sheets integration is bidirectional — pulls invoice rows on a 30-minute cron, writes audit entries back to a separate sheet, and updates invoice status/stage after dispatch.
+
+A finance team can manage invoices entirely in Sheets and use this dashboard for monitoring and review only.
+
+![Audit Sheets](docs/screenshots/audit-sheets.png)
+
+---
+
+## Queue Architecture
+
+Celery Beat fires the daily scan; workers consume from priority queues independently. Stage 3+ invoices route to `high_priority` — they don't queue behind Stage 1 reminders.
+
+```
+Beat (9am cron) ──→ scan_and_enqueue
+                          │
+              ┌───────────┼──────────┐
+              ▼           ▼          ▼
+        high_priority   default   scheduler
+       (Stage 3/4)    (Stage 1/2)
+              │
+          Worker pool
+              │
+      process_invoice
+      ├── 3 retries, exponential backoff (60s → 120s → 240s)
+      └── exhausted → dead_letter table (manually retryable)
+```
+
+**Celery Eager mode** (`CELERY_EAGER=true`) runs tasks synchronously in the API process — no Redis needed for local development.
+
+---
+
+## Observability
+
+![Monitoring](docs/screenshots/monitoring.png)
+
+**Langfuse** traces every LLM call — raw prompt, raw response, token counts, latency, validation outcome. 330 traces across all runs, $0.07 total cost at the time of this recording.
+
+![Langfuse](docs/screenshots/langfuse.png)
+
+The Monitoring page surfaces: total tokens, average latency, LLM calls vs fallbacks, dead-letter queue with retry, and direct links to Langfuse, Mailtrap inbox, Neon database, and Upstash Redis dashboards.
+
+---
+
+## Security
+
+| Risk | Implementation |
+|---|---|
+| **Prompt injection** | All client-supplied fields pass through a validator stripping `ignore previous instructions`, `system:`, `{{`, `<\|` before reaching the prompt. JSON output mode prevents injection via response path. |
+| **Hallucination** | LLM must echo all invoice fields in output. Cross-checked against source record in code. Retry loop + deterministic fallback + confidence threshold + human routing. |
+| **API key exposure** | All secrets via `.env` and `pydantic_settings.BaseSettings`. `.env.example` committed with placeholders. `.env` in `.gitignore`. LLM keys never reach the browser. |
+| **Unauthorised access** | `X-API-Key` header required on all API routes. Auth failures logged to activity feed — brute-force attempts visible. SlowAPI rate limits per endpoint. CORS locked to configured origins. |
+| **PII in logs** | Email addresses masked in all log output (`r***@domain.com`). Full email body in DB only, never in stdout. |
+| **Email spoofing** | Default is mock. Sandbox catches everything in Mailtrap. Live mode (Resend) requires domain verification with SPF, DKIM, DMARC. |
+
+---
+
+## Settings & Runtime Controls
+
+![Settings](docs/screenshots/settings.png)
+
+Everything live-configurable without restart:
+
+- LLM provider, model, API key, confidence threshold
+- Human-in-the-loop toggle
+- Auto-dispatch toggle
+- Email mode (mock / sandbox / live)
+- **Test connections** — round-trips a real call to LLM, email, Redis, and Sheets individually with inline status + latency
+
+---
+
+## Running It
+
+### Zero dependencies (2 min)
+
+```bash
+git clone https://github.com/laksh-ya/finance-follow-up
+cd finance-follow-up
 cp .env.example .env
-
-# 2. Install dependencies
 make install
-
-# 3. Start both servers
 make dev
 ```
 
-Open:
-- **Frontend**: http://localhost:3000
-- **API docs**: http://localhost:8000/docs
+Frontend → http://localhost:3000 · API docs → http://localhost:8000/docs
 
-### What's running in default mode
+Default: mock LLM, logged emails, inline tasks, SQLite. No accounts needed.
 
-| Component | Mode | What it means |
-|---|---|---|
-| LLM | `mock` (no API key) | Deterministic template emails — no external calls |
-| Email | `mock` | Logs only, no network sends |
-| Queue | `CELERY_EAGER=true` | Tasks run inline — no Redis needed |
-| Database | SQLite | File-based, zero setup |
+Upload `sample_data/invoices_sample.csv` → click **Process All** → watch the pipeline run across all escalation stages.
 
-### Going Real
-
-See **[SETUP_REAL.md](SETUP_REAL.md)** for step-by-step credentials setup:
-- LLM providers (Groq/Gemini/OpenAI/Ollama)
-- Email sandbox (Mailtrap) and live (Resend)
-- Redis queue (Upstash)
-- PostgreSQL (Supabase/Neon)
-- Langfuse tracing
-- Google Sheets sync
-- Production deployment (Render + Vercel)
-
----
-
-## Makefile Commands
+### Real LLM + sandbox email
 
 ```bash
-make help          # Show all available targets
-make install       # Install backend + frontend dependencies
-make dev           # Run backend + frontend (foreground)
-make backend       # Run backend only
-make frontend      # Run frontend only
-make worker        # Run Celery worker (needs Redis)
-make beat          # Run Celery Beat scheduler
-make flower        # Run Flower monitoring UI (:5555)
-make seed          # Seed mock invoices via API
-make reset         # Wipe local DB via API
-make test-llm      # Curl LLM diagnostic endpoint
-make test-email    # Curl email diagnostic endpoint
-make docker-up     # docker compose up (full stack)
-make docker-down   # docker compose down
-make typecheck     # Run TypeScript type check
-make stop          # Kill all running services
+# add to .env
+LLM__PROVIDER=groq
+LLM__MODEL=groq/llama-3.3-70b-versatile
+LLM__API_KEY=gsk_...            # console.groq.com — free, no card
+
+EMAIL_MODE=sandbox
+MAILTRAP_HOST=sandbox.smtp.mailtrap.io
+MAILTRAP_PORT=2525
+MAILTRAP_USER=...               # mailtrap.io — free inbox
+MAILTRAP_PASS=...
+EMAIL_FROM=Finance Collections <collections@example.com>
 ```
 
----
-
-## Docker Compose
-
-Full multi-service stack with `docker-compose.yml`:
+### Real async queue
 
 ```bash
-make docker-up     # Starts: Redis, Backend, Worker, Beat, Flower, Frontend
+CELERY_EAGER=false
+REDIS_URL=rediss://default:token@host.upstash.io:6379   # upstash.com — free serverless Redis
+
+make worker    # separate terminal
+make beat      # separate terminal
+make flower    # optional — Celery UI at :5555
 ```
 
-Services: `redis` (broker) · `backend` (FastAPI) · `worker` (Celery) · `beat` (scheduler) · `flower` (monitoring) · `frontend` (Next.js)
+### Postgres (optional, SQLite works fine for dev)
+
+```bash
+DATABASE_URL=postgresql+psycopg2://user:pass@host/db?sslmode=require
+# Neon (neon.tech) or Supabase — both free tier
+```
+
+### LLM tracing
+
+```bash
+LANGFUSE_ENABLED=true
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+# cloud.langfuse.com — free 50k events/month
+```
+
+### Google Sheets sync
+
+1. Create a GCP service account → download `credentials.json` → place in `backend/`
+2. Enable Google Sheets API on the project
+3. Share both sheets (invoice + audit) with the service account email as Editor
+
+```bash
+SHEETS_ENABLED=true
+SHEETS_CREDENTIALS_PATH=credentials.json
+SHEETS_INVOICE_ID=your_sheet_id   # from URL: /d/{ID}/edit
+SHEETS_AUDIT_ID=your_audit_sheet_id
+```
+
+### Full Docker stack
+
+```bash
+make docker-up
+# Redis · Backend · Worker · Beat · Flower (:5555) · Frontend
+```
+
+### Production (Render + Vercel)
+
+- **Backend**: Render Web Service — `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- **Worker**: Render Background Worker — `celery -A app.tasks.celery_app worker -Q high_priority,default,scheduler -c 4`
+- **Beat**: Render Background Worker — `celery -A app.tasks.celery_app beat`
+- **Frontend**: Vercel — root `frontend/`, set `NEXT_PUBLIC_API_URL` + `NEXT_PUBLIC_API_KEY`
+- Set `CORS_ORIGINS` on backend to the Vercel frontend URL
 
 ---
 
-## Runtime Controls
+## All Make Commands
 
-Configurable from **Settings UI** (`/settings`) or `PATCH /api/config`:
-
-| Setting | Options | Effect |
-|---|---|---|
-| `data_source` | `csv` · `sheets` | Invoice ingestion mode |
-| `human_in_loop` | `true` · `false` | Route risky drafts to review queue |
-| `auto_dispatch` | `true` · `false` | Auto-send vs queue all for review |
-| `email_mode` | `mock` · `sandbox` · `live` | Email delivery mode |
-| LLM settings | provider · model · key · threshold | LLM configuration |
+```bash
+make help          # all targets
+make install       # backend + frontend deps
+make dev           # both servers
+make backend / frontend / worker / beat / flower
+make seed          # seed demo invoices
+make reset         # wipe DB
+make test-llm      # test LLM connectivity
+make test-email    # send test email
+make docker-up / docker-down
+make typecheck     # TypeScript check
+make stop          # kill all services
+```
 
 ---
 
-## API Surface
+## Screenshot Index
 
-All `/api/*` endpoints require `X-API-Key` header (except `/api/invoices/sample-csv`). Full OpenAPI schema at `/docs`.
-
-| Domain | Key Endpoints |
+| File | What it shows |
 |---|---|
-| **Health** | `GET /health` · `GET /api/diagnostics/health-deep` |
-| **Invoices** | `GET /api/invoices` · `POST /api/invoices/upload` · `PATCH /api/invoices/{id}/status` · `GET /api/invoices/{id}/timeline` · `GET /api/invoices/export` |
-| **Trigger** | `POST /api/trigger/scan` · `POST /api/trigger/invoice/{invoice_id}` |
-| **Email** | `GET /api/emails/preview/{invoice_id}` · `POST /api/emails/regenerate/{invoice_id}` |
-| **Human Queue** | `GET /api/human-queue` · `POST /api/human-queue/{queue_id}/action` |
-| **Sent Emails** | `GET /api/sent-emails` · `GET /api/sent-emails/{id}` · CSV export |
-| **Audit** | `GET /api/audit` · CSV export |
-| **Metrics** | `GET /api/metrics` · `GET /api/metrics/activity-feed` · `GET /api/metrics/dead-letter` |
-| **Config** | `GET/PATCH /api/config` · `POST /api/config/seed` · `POST /api/config/reset` |
-| **Sheets** | `GET /api/sheets/status` · `POST /api/sheets/sync` |
-| **Diagnostics** | Test LLM · Test Email · Test Redis · Test Sheets |
-
----
-
-## Frontend Pages
-
-| Route | Purpose |
-|---|---|
-| `/` | Dashboard — KPI metrics, stage breakdown, live activity feed |
-| `/invoices` | Upload/sync, process/reprocess, filter, status management |
-| `/invoices/[id]` | Per-invoice detail — regenerate, timeline, email preview |
-| `/human-queue` | Review actions: approve, edit, reject, regenerate, flag |
-| `/sent` | Sent email log with full body preview and delivery status |
-| `/audit` | Filterable audit table with CSV export |
-| `/observability` | LLM health, dead-letter queue monitoring |
-| `/settings` | Runtime configuration and test connections panel |
-
----
-
-## Repository Structure
-
-```
-finance-follow-up/
-├── backend/
-│   ├── app/
-│   │   ├── api/            # FastAPI routers (invoices, trigger, emails, etc.)
-│   │   ├── db/             # SQLModel tables, session factory, repository layer
-│   │   ├── email/          # Dispatcher (mock / SMTP / Resend)
-│   │   ├── llm/            # LiteLLM gateway + deterministic mock
-│   │   ├── models/         # Pydantic DTOs (invoice, email output, audit, enums, state)
-│   │   ├── pipeline/       # LangGraph graph, nodes, prompt registry
-│   │   ├── services/       # Sheets sync, Langfuse client, mock seed
-│   │   ├── tasks/          # Celery app + invoice processing tasks
-│   │   ├── config.py       # Pydantic settings (env-driven)
-│   │   └── main.py         # FastAPI entrypoint
-│   ├── Dockerfile
-│   └── requirements.txt
-├── frontend/
-│   ├── app/                # Next.js route pages
-│   ├── components/         # Reusable UI + domain widgets
-│   ├── lib/                # API client + shared types
-│   ├── Dockerfile
-│   └── package.json
-├── sample_data/            # Sample CSVs for demos
-├── docs/
-│   └── ARCHITECTURE.md     # Deep layer-wise architecture documentation
-├── .env.example            # Environment template with all variables
-├── docker-compose.yml      # Full multi-service stack
-├── Makefile                # Common operations
-└── SETUP_REAL.md           # Comprehensive setup guide (mock → production)
-```
-
----
-
-## Sample Outputs
-
-- `sample_data/invoices_sample.csv` — downloadable sample invoice CSV (also served at `/api/invoices/sample-csv`)
-- `sample_data/live_demo_audit.csv` — example audit records showing delivery status progression
-- `sample_data/live_demo_invoices.csv` — sample invoice data across multiple escalation stages
-- Generated emails are viewable in the `/sent` page and per-invoice detail views
-
----
-
-## Task Requirement Coverage
-
-| Requirement | Status | Implementation |
-|---|---|---|
-| Email generation with stage-appropriate tone | ✅ | `pipeline/prompts.py`, `llm/gateway.py` |
-| Trigger logic for overdue invoices | ✅ | `tasks/invoice_tasks.py` |
-| Send or mock-send support | ✅ | `email/dispatcher.py` (mock, sandbox, live) |
-| Audit trail with metadata | ✅ | `db/tables.py` (AuditTable, SentEmailTable) |
-| Escalation cap after stage 4 (30+ days) | ✅ | `pipeline/nodes.py` (classify_stage, human_queue) |
-| Human-in-the-loop review | ✅ | `api/human_queue.py`, frontend queue page |
-| Technical stack + rationale disclosure | ✅ | This README |
-| Prompt design disclosure | ✅ | This README + `docs/ARCHITECTURE.md` |
-| Security risk mitigation disclosure | ✅ | This README |
-| Architecture diagram | ✅ | This README + `docs/ARCHITECTURE.md` |
-| `.env.example` | ✅ | Root `.env.example` |
-| `requirements.txt` | ✅ | `backend/requirements.txt` |
-| Sample output (emails/audit) | ✅ | `sample_data/` |
+| `dashboard.png` | KPI cards, stage breakdown, live activity feed |
+| `review-queue.png` | Human review queue — escalated + stage 4 grouped |
+| `review-queue-detail.png` | Stage 4 final notices with approve/edit/reject actions |
+| `sent-emails.png` | Sent emails page — full body, provider, confidence badge |
+| `mailtrap.png` | Mailtrap sandbox inbox — multiple emails received |
+| `mailtrap-email.png` | Mailtrap individual email — rendered body |
+| `monitoring.png` | LLM health, dead-letter queue, external dashboard links |
+| `settings.png` | Model picker, confidence threshold, email mode |
+| `settings-email.png` | Email delivery mode selector |
+| `settings-connections.png` | Test connections panel |
+| `langfuse.png` | Langfuse — 330 traces, $0.07 cost |
+| `langfuse-early.png` | Langfuse — early run, 64 traces |
+| `audit-sheets.png` | Google Sheets audit writeback |
+| `sheets-invoices.png` | Google Sheets invoice source |
+| `architecture.png` | Full architecture diagram |
+| `onboarding.png` | Welcome modal — data source + HIL setup |
+| `dashboard-empty.png` | Empty state with getting started guide |
+| `upstash-redis.png` | Upstash Redis dashboard (Mumbai, free tier) |
+| `gcp-service-account.png` | GCP service account for Sheets sync |
