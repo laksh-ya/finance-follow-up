@@ -360,26 +360,3 @@ make stop          # kill all services
 
 ---
 
-## Screenshot Index
-
-| File | What it shows |
-|---|---|
-| `dashboard.png` | KPI cards, stage breakdown, live activity feed |
-| `review-queue.png` | Human review queue — escalated + stage 4 grouped |
-| `review-queue-detail.png` | Stage 4 final notices with approve/edit/reject actions |
-| `sent-emails.png` | Sent emails page — full body, provider, confidence badge |
-| `mailtrap.png` | Mailtrap sandbox inbox — multiple emails received |
-| `mailtrap-email.png` | Mailtrap individual email — rendered body |
-| `monitoring.png` | LLM health, dead-letter queue, external dashboard links |
-| `settings.png` | Model picker, confidence threshold, email mode |
-| `settings-email.png` | Email delivery mode selector |
-| `settings-connections.png` | Test connections panel |
-| `langfuse.png` | Langfuse — 330 traces, $0.07 cost |
-| `langfuse-early.png` | Langfuse — early run, 64 traces |
-| `audit-sheets.png` | Google Sheets audit writeback |
-| `sheets-invoices.png` | Google Sheets invoice source |
-| `architecture.png` | Full architecture diagram |
-| `onboarding.png` | Welcome modal — data source + HIL setup |
-| `dashboard-empty.png` | Empty state with getting started guide |
-| `upstash-redis.png` | Upstash Redis dashboard (Mumbai, free tier) |
-| `gcp-service-account.png` | GCP service account for Sheets sync |
